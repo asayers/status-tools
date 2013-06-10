@@ -1,0 +1,7 @@
+*.o
+*.hi
+*.un~
+battery
+network
+volume
+status-tools
