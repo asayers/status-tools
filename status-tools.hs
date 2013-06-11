@@ -1,72 +1,61 @@
 import System.Process (readProcess)
-import Control.Monad (liftM)
+import Control.Monad (liftM, liftM2)
 import Data.Maybe (fromMaybe)
 import Data.List (isPrefixOf)
 import System.Timeout (timeout)
 
-type BatState = (Int, Power)
-data Power = Charging | Discharging
-
-data MuteState = Muted | Unmuted
+type BatState = (Int, Bool)
 
 data NetState = Connected | Connecting | Disconnected | Unavailable | Other String
   deriving (Show)
 
 ---- Battery
 
--- Parse the output from `acpi`
 parsePercent :: String -> Int
 parsePercent str = read . takeWhile (/= '%') $ str
 
-parsePower :: String -> Power
-parsePower str = if str == "Charging,"
-                   then Charging
-                   else Discharging
-                  
-parse :: String -> BatState
-parse str = (percent, power)
+-- returns True iff charging
+parsePower :: String -> Bool
+parsePower str = str == "Charging,"
+
+parseBat :: String -> BatState
+parseBat str = (percent, power)
   where percent = parsePercent $ fields !! 3
         power   = parsePower   $ fields !! 2
         fields  = words str
 
--- Generate output
-
-stateColour :: BatState -> String
-stateColour (_, Charging) = "yellow"
-stateColour (x, Discharging)
-  | x < 10    = "red"
-  | otherwise = "green"
-
 batOutput :: BatState -> String
-batOutput state =
-  concat [ "<fc=", colour, ">"
-         , percent
-         , "</fc>%"
-         ]
-  where percent = show . fst $ state
-        colour  = stateColour state
+batOutput state = concat [ "<fc=", colour state, ">"
+                         , percent
+                         , "</fc>%"
+                         ]
+  where percent          = show . fst $ state
+        colour (_, True) = "yellow"
+        colour (x, False)
+          | x < 10       = "red"
+          | otherwise    = "green"
+
 
 ---- Volume
 
 parseVolume :: String -> Int
-parseVolume str = read . takeWhile (/= '%') . drop 1 $ words (lines str !! 5) !! 4
+parseVolume str = read . takeWhile (/= '%') . drop 1 $ extractWord str 5 4
 
-parseMute :: String -> MuteState
-parseMute str = if state == "on"
-                  then Muted
-                  else Unmuted
-  where state = words (lines str !! 1) !! 1
+-- returns True if muted
+parseMute :: String -> Bool
+parseMute str = extractWord str 1 1 == "on"
 
-volOutput :: Int -> MuteState -> String
-volOutput vol mute = concat [ "<fc=", colourise mute, ">"
+formatVol :: Int -> Bool -> String
+formatVol vol mute = concat [ "<fc=", colourise mute, ">"
                          , show vol
                          , "</fc>%"
                          ]
-  where colourise Muted   = "red"
-        colourise Unmuted = "green"
+  where colourise True  = "red"
+        colourise False = "green"
 
 ---- Network
   
+-- TODO: Consider rationalising all this mess
 readState :: String -> NetState
 readState "connected"    = Connected
 readState "disconnected" = Disconnected
@@ -75,36 +64,52 @@ readState str = if "connecting" `isPrefixOf` str
                   then Connecting
                   else Other str
 
--- Returns [wifi, eth]
-parseDevices :: String -> [NetState]
-parseDevices str = map (readState . extract) [1,2]
-  where extract n = words (lines str !! n) !! 2
+formatNet :: [NetState] -> String -> String
+formatNet [_, Connected] ip = "<fc=yellow>"++ip++"</fc>"
+formatNet [Connected, _] ip = "<fc=green>"++ip++"</fc>"
+formatNet [Disconnected, _] _ = "<fc=darkred>disconnected</fc>"
+formatNet [Unavailable, _] _ = "<fc=darkred>unavailable</fc>"
+formatNet [_, Connecting] _ = "<fc=yellow>connecting...</fc>"
+formatNet [Connecting, _] _ = "<fc=orange>connecting...</fc>"
+formatNet [Other x, _] _ = "<fc=blue>"++x++"</fc>"
 
-netOutput :: [NetState] -> String -> String
-netOutput [_, Connected] ip = "<fc=yellow>"++ip++"</fc>"
-netOutput [Connected, _] ip = "<fc=green>"++ip++"</fc>"
-netOutput [Disconnected, _] _ = "<fc=darkred>disconnected</fc>"
-netOutput [Unavailable, _] _ = "<fc=darkred>unavailable</fc>"
-netOutput [_, Connecting] _ = "<fc=yellow>connecting...</fc>"
-netOutput [Connecting, _] _ = "<fc=orange>connecting...</fc>"
-netOutput [Other x, _] _ = "<fc=blue>"++x++"</fc>"
 
-safeIP :: IO String
-safeIP = do
-   ip <- timeout 10000 $ readProcess "hostname" ["-i"] ""
+-- Helpers
+
+extractWord :: String -> Int -> Int -> String
+extractWord str line word = words (lines str !! line) !! word
+
+-- IO code
+
+-- TODO: change to `ifconfig`
+getIP :: IO String
+getIP = do
+   ip <- timeout 100000 $ readProcess "hostname" ["-i"] ""
    return . head . words $ fromMaybe "127.0.0.1" ip
+
+getNetState :: IO [NetState]
+getNetState = do
+  devs <- readProcess "nmcli" ["dev"] ""
+  return $ map (readState . flip (extractWord devs) 2) [1,2]
+
+getVol :: IO Int
+getVol = liftM parseVolume $ readProcess "amixer" ["get", "Master"] ""
+
+getMute :: IO Bool
+getMute = liftM parseMute $ readFile "/proc/acpi/ibm/volume"
+
+getBat :: IO String
+getBat = do
+  output <- readProcess "acpi" ["-b"] ""
+  return . batOutput . parseBat $ output
 
 ---- Main
 
 main :: IO ()
 main = do
   putStr "Bat: "
-  readProcess "acpi" ["-b"] "" >>= putStr . batOutput . parse
+  getBat >>= putStr
   putStr " | Vol: "
-  vol <- liftM parseVolume $ readProcess "amixer" ["get", "Master"] ""
-  mute <- liftM parseMute $ readFile "/proc/acpi/ibm/volume"
-  putStr $ volOutput vol mute
+  liftM2 formatVol getVol getMute >>= putStr
   putStr " | Net: "
-  devs <- liftM parseDevices $ readProcess "nmcli" ["dev"] ""
-  ip   <- safeIP
-  putStr $ netOutput devs ip
+  liftM2 formatNet getNetState getIP >>= putStr
