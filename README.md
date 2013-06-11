@@ -6,3 +6,10 @@ Generates system status info, intended for use with xmobar. This is a reimplemen
 The file you want is `status-tools.hs`. Everything else here is cruft.
 
 The source contains some references which are pretty specific to my system. If you compile and run without modification it'll probably just throw an exception.
+
+To-do
+-----
+
+- Implement mocp parser
+- Switch to ifconfig
+- Be smarter about parsing - parsec?
