@@ -13,3 +13,8 @@ To-do
 - Implement mocp parser
 - Switch to ifconfig
 - Be smarter about parsing - parsec?
+
+Licence
+-------
+
+On the off-chance that anyone wants to use this code, the licence is BSD 3-clause.
