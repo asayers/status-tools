@@ -1,6 +1,7 @@
 *.o
 *.hi
 *.un~
+*.swp
 battery
 network
 volume
